@@ -18,19 +18,28 @@ st.set_page_config(
 st.title("📊 Mean Reversion Strategy + Diversification")
 st.markdown("---")
 
-# 기본 자산 리스트
-ASSETS = ["QQQ", "SPY", "EWY", "IEMG", "IDEV", "ACWI"]
+# 기본 추천(placeholder) 자산 리스트 (사용자는 직접 입력 가능)
+DEFAULT_ASSETS = ["QQQ", "SPY", "EWY", "IEMG", "IDEV", "ACWI"]
+DEFAULT_ASSETS_STR = ", ".join(DEFAULT_ASSETS)
 
-# 사이드바: 모드(단일자산 vs 포트폴리오), 자산선택, 기간, 다각화 옵션
+# 사이드바: 모드(단일자산 vs 포트폴리오), 사용자 입력 티커, 기간, 다각화 옵션
 with st.sidebar:
     st.header("⚙️ 설정")
+
     mode = st.radio("Mode", options=["Single Asset", "Diversified Portfolio"], index=0)
+
+    st.markdown("### Ticker 입력 방식")
     if mode == "Single Asset":
-        asset = st.selectbox("자산 선택", options=ASSETS, index=0)
+        st.markdown("원하시는 티커를 입력하세요 (예: QQQ). 기본값은 QQQ입니다.")
+        user_ticker = st.text_input("Ticker", value="QQQ").strip().upper()
+        # keep as single-element list for uniform downstream handling
+        tickers = [user_ticker] if user_ticker else []
     else:
-        asset = "PORTFOLIO"
-        st.markdown("Portfolio assets:")
-        st.write(", ".join(ASSETS))
+        st.markdown("콤마(,)로 구분하여 여러 티커를 입력하세요. 예: QQQ, SPY, EWY")
+        tickers_text = st.text_input("Tickers (comma-separated)", value=DEFAULT_ASSETS_STR)
+        # parse input into list of tickers
+        tickers = [t.strip().upper() for t in (tickers_text or "").split(",") if t.strip()]
+
     start_date = st.date_input(
         "시작 날짜",
         value=datetime(1999, 3, 10),
@@ -43,6 +52,7 @@ with st.sidebar:
         min_value=datetime(1999, 3, 10),
         max_value=datetime.now()
     )
+
     st.markdown("---")
     st.subheader("Diversification settings")
     if mode == "Diversified Portfolio":
@@ -74,7 +84,12 @@ with st.sidebar:
 # ---------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def download_data(ticker: str, start, end):
-    df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
+    # yfinance accepts single ticker string
+    try:
+        df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
+    except Exception:
+        # return empty df on failure to allow graceful handling
+        return pd.DataFrame()
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     return df
@@ -110,7 +125,6 @@ def generate_signals(df: pd.DataFrame):
 
     for i in range(len(df)):
         if pd.isna(df['Entry_Condition'].iloc[i]):
-            # can't evaluate yet
             continue
 
         if position == 0 and df['Entry_Condition'].iloc[i]:
@@ -191,7 +205,7 @@ def calculate_metrics(returns: pd.Series):
 # ---------------------------
 def prepare_ticker_series(ticker, start, end):
     df = download_data(ticker, start, end)
-    if df is None or len(df) == 0:
+    if df is None or df.empty:
         return None, None
     df = calculate_indicators(df)
     df, trades = generate_signals(df)
@@ -247,7 +261,6 @@ def build_portfolio(assets_list, start, end, div_method, rebalance_freq, vol_loo
     strat_returns_filled = strat_returns.fillna(0)
     bh_returns_filled = bh_returns.fillna(0)
     if daily_weights.empty:
-        # default equal weight if weights not computed
         daily_weights = pd.DataFrame(1.0 / max(1, len(per_asset_dfs)), index=strat_returns_filled.index, columns=strat_returns_filled.columns)
 
     daily_weights = daily_weights.reindex(strat_returns_filled.index, method='ffill').fillna(1.0 / max(1, len(per_asset_dfs)))
@@ -271,12 +284,19 @@ def build_portfolio(assets_list, start, end, div_method, rebalance_freq, vol_loo
 # Main: Single asset or Portfolio
 # ---------------------------
 try:
+    # Validate tickers
+    if not tickers:
+        st.error("하나 이상의 유효한 티커를 입력하세요.")
+        st.stop()
+
+    # If single asset mode, use the single ticker; if portfolio, use parsed list
     if mode == "Single Asset":
+        asset = tickers[0]
         with st.spinner(f'{asset} 데이터 다운로드 중...'):
             qdf = download_data(asset, start_date, end_date)
 
-        if qdf is None or len(qdf) == 0:
-            st.error("데이터를 불러올 수 없습니다. 날짜 범위를 확인하거나 네트워크 문제를 점검하세요.")
+        if qdf is None or qdf.empty:
+            st.error(f"{asset}의 데이터를 불러올 수 없습니다. 티커를 확인하세요.")
             st.stop()
 
         with st.spinner('지표 및 시그널 계산 중...'):
@@ -371,8 +391,9 @@ try:
 
     else:
         # Portfolio mode
+        assets_list = tickers  # use user-provided tickers
         with st.spinner('다중 자산 데이터 다운로드 및 처리 중...'):
-            result = build_portfolio(ASSETS, start_date, end_date, div_method, rebalance_freq, vol_lookback)
+            result = build_portfolio(assets_list, start_date, end_date, div_method, rebalance_freq, vol_lookback)
 
         per_asset_dfs = result['per_asset_dfs']
         per_asset_trades = result['per_asset_trades']
@@ -381,20 +402,15 @@ try:
 
         st.header("📊 Diversified Portfolio (Strategy aggregated across assets)")
 
-        # === 안전한 weights 표시: Series.name에 timestamp처럼 ':'이 포함될 경우 Altair 오류 발생함 ===
+        # === 안전한 weights 표시 ===
         try:
-            # find intersection index between portfolio_df and daily_weights
             common_idx = portfolio_df.index.intersection(daily_weights.index)
-            if len(common_idx) == 0:
-                st.info("가중치 계산에 사용할 공통 날짜가 없습니다. 가중치가 계산되지 않았습니다.")
+            if len(common_idx) == 0 or daily_weights.empty:
+                st.info("가중치 계산에 사용할 공통 날짜가 없거나 가중치가 계산되지 않았습니다.")
             else:
-                # take most recent rebalance row available within common_idx
                 last_weights = daily_weights.loc[common_idx].ffill().iloc[-1]
-                # ensure numeric and fill NaN with 0
                 last_weights = last_weights.astype(float).fillna(0.0)
-                # convert to DataFrame with safe column name 'Weight' and index name 'Asset'
                 last_weights_df = last_weights.rename_axis('Asset').reset_index(name='Weight')
-                # set index by Asset and pass to st.bar_chart (no colon in column names)
                 st.subheader("Weights snapshot (most recent rebalance)")
                 st.bar_chart(last_weights_df.set_index('Asset'))
         except Exception as e_w:
