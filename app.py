@@ -199,35 +199,26 @@ def prepare_ticker_series(ticker, start, end):
     return df, trades
 
 def compute_monthly_weights(price_returns_df: pd.DataFrame, method: str, lookback_days: int, freq: str):
-    # price_returns_df: DataFrame columns=tickers, index=daily dates, values=buy&hold daily returns
-    # method: "Equal Weight" or "Inverse Volatility"
-    # freq: 'M' or 'Q'
+    if price_returns_df.shape[1] == 0:
+        return pd.DataFrame(index=price_returns_df.index)
     if method == "Equal Weight":
         n = price_returns_df.shape[1]
         w = pd.DataFrame(1.0 / n, index=price_returns_df.resample(freq).mean().index, columns=price_returns_df.columns)
-        # expand to daily by forward fill from resample index start
         daily_weights = w.reindex(price_returns_df.index, method='ffill').fillna(method='ffill').fillna(1.0 / price_returns_df.shape[1])
         return daily_weights
     elif method == "Inverse Volatility":
-        # compute rolling lookback vol per asset at each rebalance date (end of period)
-        # use historical buy&hold returns (price_returns_df)
         vol = price_returns_df.rolling(window=lookback_days, min_periods=10).std()
-        # take vol at rebalance dates (end of period)
         vol_at_reb = vol.resample(freq).last()
         inv_vol = 1.0 / vol_at_reb
         inv_vol = inv_vol.replace([np.inf, -np.inf], np.nan).fillna(0)
-        # normalize
         weights = inv_vol.div(inv_vol.sum(axis=1), axis=0).fillna(1.0 / price_returns_df.shape[1])
-        # forward fill to daily index
         daily_weights = weights.reindex(price_returns_df.index, method='ffill').fillna(method='ffill')
-        # If still NaN (start), fill equal
         daily_weights = daily_weights.fillna(1.0 / price_returns_df.shape[1])
         return daily_weights
     else:
         raise ValueError("Unknown method")
 
 def build_portfolio(assets_list, start, end, div_method, rebalance_freq, vol_lookback):
-    # prepare per-ticker dfs and trades
     per_asset_dfs = {}
     per_asset_trades = {}
     for t in assets_list:
@@ -238,9 +229,10 @@ def build_portfolio(assets_list, start, end, div_method, rebalance_freq, vol_loo
         per_asset_dfs[t] = df
         per_asset_trades[t] = trades
 
-    # align indices
+    if len(per_asset_dfs) == 0:
+        return {'per_asset_dfs': {}, 'per_asset_trades': {}, 'portfolio_df': pd.DataFrame(), 'daily_weights': pd.DataFrame()}
+
     all_index = sorted(set().union(*[set(df.index) for df in per_asset_dfs.values()]))
-    # build DataFrames of daily strategy and buyhold returns
     strat_returns = pd.DataFrame(index=all_index)
     bh_returns = pd.DataFrame(index=all_index)
     for t, df in per_asset_dfs.items():
@@ -248,21 +240,20 @@ def build_portfolio(assets_list, start, end, div_method, rebalance_freq, vol_loo
         strat_returns[t] = tmp['Strategy_Daily_Return']
         bh_returns[t] = tmp['BuyHold_Daily_Return']
 
-    # compute weights
     freq_map = {'Monthly': 'M', 'Quarterly': 'Q'}
-    freq = freq_map.get(rebalance_freq, 'M')
-    daily_weights = compute_monthly_weights(bh_returns.fillna(0), div_method, vol_lookback, freq)
+    freq = freq_map.get(rebalance_freq, 'M') if rebalance_freq else 'M'
+    daily_weights = compute_monthly_weights(bh_returns.fillna(0), div_method, vol_lookback, freq) if div_method else pd.DataFrame(index=strat_returns.index)
 
-    # compute portfolio returns at each day (weighted sum across assets)
-    # If asset has NaN returns on that day, treat as 0 return for that asset (cash)
     strat_returns_filled = strat_returns.fillna(0)
     bh_returns_filled = bh_returns.fillna(0)
-    # align weights index and fill missing days
+    if daily_weights.empty:
+        # default equal weight if weights not computed
+        daily_weights = pd.DataFrame(1.0 / max(1, len(per_asset_dfs)), index=strat_returns_filled.index, columns=strat_returns_filled.columns)
+
     daily_weights = daily_weights.reindex(strat_returns_filled.index, method='ffill').fillna(1.0 / max(1, len(per_asset_dfs)))
     portfolio_strategy_return = (daily_weights * strat_returns_filled).sum(axis=1)
     portfolio_bh_return = (daily_weights * bh_returns_filled).sum(axis=1)
 
-    # Build portfolio-level cumulative series and metrics
     portfolio_df = pd.DataFrame(index=strat_returns_filled.index)
     portfolio_df['Strategy_Daily_Return'] = portfolio_strategy_return
     portfolio_df['BuyHold_Daily_Return'] = portfolio_bh_return
@@ -293,7 +284,6 @@ try:
             qdf, trades_df = generate_signals(qdf)
             qdf = calculate_returns(qdf)
 
-        # 화면 표시 (single)
         latest = qdf.iloc[-1]
         st.header(f"🔔 현재 시그널 - {asset}")
         c1, c2, c3, c4 = st.columns(4)
@@ -327,7 +317,6 @@ try:
                 st.markdown(f"**종가 < 하단밴드:** {'✅' if latest.get('Close', np.nan) < latest.get('Lower_Band', np.nan) else '❌'}")
                 st.markdown(f"**IBS < 0.3:** {'✅' if latest.get('IBS', np.nan) < 0.3 else '❌'}")
 
-        # metrics
         qdf_clean = qdf.dropna(subset=['Strategy_Daily_Return', 'BuyHold_Daily_Return'])
         strat_metrics = calculate_metrics(qdf_clean['Strategy_Daily_Return'])
         bm_metrics = calculate_metrics(qdf_clean['BuyHold_Daily_Return'])
@@ -348,7 +337,6 @@ try:
             if len(trades_df) > 0:
                 st.metric("승률", f"{(trades_df['Return'] > 0).sum() / len(trades_df) * 100:.1f}%")
 
-        # charts
         st.header("📊 차트")
         tab1, tab2, tab3 = st.tabs(["누적 수익률", "낙폭", "거래 분석"])
         with tab1:
@@ -392,17 +380,36 @@ try:
         daily_weights = result['daily_weights']
 
         st.header("📊 Diversified Portfolio (Strategy aggregated across assets)")
-        # show weights snapshot
-        st.subheader("Weights snapshot (most recent rebalance)")
-        last_weights = daily_weights.loc[portfolio_df.index.intersection(daily_weights.index)].ffill().iloc[-1]
-        st.bar_chart(last_weights)
+
+        # === 안전한 weights 표시: Series.name에 timestamp처럼 ':'이 포함될 경우 Altair 오류 발생함 ===
+        try:
+            # find intersection index between portfolio_df and daily_weights
+            common_idx = portfolio_df.index.intersection(daily_weights.index)
+            if len(common_idx) == 0:
+                st.info("가중치 계산에 사용할 공통 날짜가 없습니다. 가중치가 계산되지 않았습니다.")
+            else:
+                # take most recent rebalance row available within common_idx
+                last_weights = daily_weights.loc[common_idx].ffill().iloc[-1]
+                # ensure numeric and fill NaN with 0
+                last_weights = last_weights.astype(float).fillna(0.0)
+                # convert to DataFrame with safe column name 'Weight' and index name 'Asset'
+                last_weights_df = last_weights.rename_axis('Asset').reset_index(name='Weight')
+                # set index by Asset and pass to st.bar_chart (no colon in column names)
+                st.subheader("Weights snapshot (most recent rebalance)")
+                st.bar_chart(last_weights_df.set_index('Asset'))
+        except Exception as e_w:
+            st.error("가중치 시각화 중 오류가 발생했습니다.")
+            st.exception(e_w)
+
+        if portfolio_df is None or portfolio_df.empty:
+            st.error("포트폴리오 데이터가 비어있습니다.")
+            st.stop()
 
         latest = portfolio_df.iloc[-1]
         st.metric("날짜", portfolio_df.index[-1].strftime('%Y-%m-%d'))
         st.metric("포트폴리오 전략 누적수익률", f"{(portfolio_df['Strategy_Cumulative'].iloc[-1]-1)*100:.2f}%")
         st.metric("포트폴리오 BM 누적수익률", f"{(portfolio_df['BuyHold_Cumulative'].iloc[-1]-1)*100:.2f}%")
 
-        # metrics
         strat_metrics = calculate_metrics(portfolio_df['Strategy_Daily_Return'])
         bm_metrics = calculate_metrics(portfolio_df['BuyHold_Daily_Return'])
         st.header("📈 성과 지표 (Portfolio Strategy vs BM)")
@@ -417,10 +424,9 @@ try:
             st.metric("전략 샤프 비율", f"{strat_metrics['Sharpe Ratio']:.2f}")
             st.metric("전략 최대낙폭", f"{strat_metrics['Max Drawdown']*100:.2f}%")
         with c4:
-            total_trades = sum([len(t) for t in per_asset_trades.values()])
+            total_trades = sum([len(t) for t in per_asset_trades.values()]) if per_asset_trades else 0
             st.metric("총 거래 수 (모든 자산 합)", total_trades)
 
-        # charts
         st.header("📊 차트 (Portfolio)")
         tab1, tab2, tab3 = st.tabs(["누적 수익률", "낙폭", "개별 자산 기여"])
         with tab1:
@@ -442,17 +448,14 @@ try:
             fig2.update_layout(title='Drawdown', xaxis_title='날짜', yaxis_title='낙폭 (%)', template='plotly_white', height=500)
             st.plotly_chart(fig2, use_container_width=True)
         with tab3:
-            # compute contribution: weights * per-asset cumulative
             contributions = {}
             for t, df in per_asset_dfs.items():
-                # align with portfolio index
                 tmp = df.reindex(portfolio_df.index).copy()
                 tmp['Strat_Cum'] = (1 + tmp['Strategy_Daily_Return']).cumprod().fillna(method='ffill').fillna(1)
                 contributions[t] = tmp['Strat_Cum']
             contrib_df = pd.DataFrame(contributions)
             st.line_chart(contrib_df)
 
-        # show recent trades across assets
         st.markdown("---")
         st.subheader("최근 거래 (자산별)")
         recent_trades_list = []
