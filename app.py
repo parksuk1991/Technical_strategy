@@ -40,15 +40,18 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 전략 규칙")
     st.markdown("""
-    1. Compute the rolling mean of High minus Low over the last 25 days.
-    2. Compute the IBS indicator: (Close - Low) / (High - Low).
-    3. Compute a lower band as the rolling High over the last 10 days minus 2.5 × the rolling mean from (1).
-    4. Go long whenever the asset closes under the lower band (3) and IBS < 0.3.
-    5. Close the trade whenever close price is higher than yesterday's high.
-    6. Also, close the trade whenever the price is lower than the 300-SMA.
+    1. 최근 25일간의 (고가 - 저가) 차이의 이동평균을 계산
+    2. IBS(Internal Bar Strength) indicator 계산: (종가-저가)/(고가-저가)
+    3. 최근 10일간의 고가 이동값에서 (1)에서 구한 이동평균의 2.5배를 차감하여 하단 밴드(Lower Band)를 계산
+    4. 자산의 종가가 하단 밴드 아래에 위치하고, 동시에 IBS < 0.3일 때 매수(Long) 포지션 진입
+    5. 종가가 전일 고가를 상회할 경우, 보유 중인 포지션을 청산
+    6. 가격이 200일 이동평균선(SMA) 이하로 하락할 경우에도 포지션 청산
+
+    
+    
     """)
     st.markdown("---")
-    st.caption("BM (benchmark) is the asset's Buy & Hold and will be shown as 'BM' in comparisons.")
+    st.caption("Benchmark는 자산의 단순 Buy & Hold 전략을 의미하며, 비교 시 ‘BM’으로 표시")
 
 # 데이터 다운로드 (캐시)
 @st.cache_data(ttl=3600, show_spinner=False)
