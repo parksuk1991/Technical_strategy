@@ -70,12 +70,12 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df['Lower_Band'] = df['Rolling_High_10'] - (2.5 * df['HL_Avg_25'])
     df['Prev_High'] = df['High'].shift(1)
     # 300-SMA (rule 6)
-    df['SMA_300'] = df['Close'].rolling(window=300, min_periods=1).mean()
+    df['SMA_200'] = df['Close'].rolling(window=200, min_periods=1).mean()
     # Entry condition (rule 4)
     df['Entry_Condition'] = (df['Close'] < df['Lower_Band']) & (df['IBS'] < 0.3)
     # Exit conditions (rule 5 and 6)
     df['Exit_By_PrevHigh'] = df['Close'] > df['Prev_High']
-    df['Exit_By_SMA300'] = df['Close'] < df['SMA_300']
+    df['Exit_By_SMA300'] = df['Close'] < df['SMA_200']
     df['Exit_Condition'] = df['Exit_By_PrevHigh'] | df['Exit_By_SMA300']
     return df
 
@@ -121,7 +121,7 @@ def generate_signals(df: pd.DataFrame):
                 if df['Exit_By_PrevHigh'].iloc[i]:
                     reasons.append('Prev_High')
                 if df['Exit_By_SMA300'].iloc[i]:
-                    reasons.append('SMA_300')
+                    reasons.append('SMA_200')
                 reason_text = "|".join(reasons) if reasons else "Exit"
 
                 df.at[df.index[i], 'Exit_Reason'] = reason_text
@@ -208,7 +208,7 @@ try:
         if latest['Entry_Condition'] and current_position == 0:
             st.markdown("### 🟢 진입 신호")
         elif latest['Exit_By_SMA300'] and current_position == 1:
-            st.markdown("### 🔴 청산 신호 (SMA_300)")
+            st.markdown("### 🔴 청산 신호 (SMA_200)")
         elif latest['Exit_By_PrevHigh'] and current_position == 1:
             st.markdown("### 🔴 청산 신호 (Prev High)")
         else:
@@ -224,7 +224,7 @@ try:
             st.metric("전일 고가", f"${latest.get('Prev_High', np.nan):.2f}")
             st.metric("10일 최고가", f"${latest.get('Rolling_High_10', np.nan):.2f}")
         with col3:
-            st.metric("300-SMA", f"${latest.get('SMA_300', np.nan):.2f}")
+            st.metric("200-SMA", f"${latest.get('SMA_200', np.nan):.2f}")
             entry_check = "✅" if latest.get('Close', np.nan) < latest.get('Lower_Band', np.nan) else "❌"
             st.markdown(f"**종가 < 하단밴드:** {entry_check}")
             ibs_check = "✅" if latest.get('IBS', np.nan) < 0.3 else "❌"
