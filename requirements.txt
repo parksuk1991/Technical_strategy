@@ -1,10 +1,8 @@
-streamlit==1.30.0
-yfinance==0.2.27
-pandas==2.2.2
-numpy==1.26.4
-plotly==5.20.0
-scipy==1.11.3
-openpyxl==3.2.2
-seaborn==0.12.2
-# removed: quantstats, kaleido, packages that require system libs or source build
-# Keep the list minimal—add back packages only if you confirm wheels are available on PyPI/build host
+streamlit
+yfinance
+pandas
+numpy
+plotly
+scipy
+openpyxl
+seaborn
